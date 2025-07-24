@@ -19,15 +19,15 @@ func main() {
 	}
 
 	// Verifica se as configurações essenciais estão presentes
-	if cfg.VestroLogin == "" || cfg.VestroPassword == "" || cfg.GrailsAppURL == "" {
-		log.Fatal("Essential environment variables (VESTRO_LOGIN, VESTRO_PASSWORD, GRAILS_APP_URL) are not set.")
+	if cfg.GrailsAppURL == "" {
+		log.Fatal("Essential environment variables (GRAILS_APP_URL) are not set.")
 		os.Exit(1)
 	}
 
 	// --- Composição das Dependências (Dependency Injection) ---
 
 	// 1. Cria os adaptadores (implementações concretas das portas)
-	vestroClient := vestro_api.New(cfg.VestroBaseURL, cfg.VestroLogin, cfg.VestroPassword)
+	vestroClient := vestro_api.New(cfg.VestroBaseURL)
 	grailsNotifier := agriwin_api.New(cfg.GrailsAppURL)
 	agriwinUserProvider := user_provider.New(cfg.AgriwinUsersURL)
 

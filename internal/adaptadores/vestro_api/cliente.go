@@ -16,26 +16,22 @@ import (
 
 type apiClient struct {
 	baseURL    string
-	login      string
-	password   string
 	httpClient *http.Client
 }
 
-func New(baseURL, login, password string) *apiClient {
+func New(baseURL string) *apiClient {
 	return &apiClient{
-		baseURL:  baseURL,
-		login:    login,
-		password: password,
+		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 45 * time.Second,
 		},
 	}
 }
 
-func (c *apiClient) Authenticate(ctx context.Context) (string, error) {
+func (c *apiClient) Authenticate(ctx context.Context, login, password string) (string, error) {
 	formData := url.Values{}
-	formData.Set("login", c.login)
-	formData.Set("password", c.password)
+	formData.Set("login", login)
+	formData.Set("password", password)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/sessions", bytes.NewBufferString(formData.Encode()))
 	if err != nil {

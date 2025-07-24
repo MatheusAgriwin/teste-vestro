@@ -1,4 +1,4 @@
-package service
+package servicos
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"log"
 	"sync"
 	"time"
-	portas "vestro/internal/aplicacao/portas"
+	"vestro/internal/aplicacao/portas"
 	"vestro/internal/dto"
 )
 
@@ -31,11 +31,10 @@ func New(
 	}
 }
 
-// RunImport executa o novo processo iterativo.
 func (s *ImporterService) RunImport(ctx context.Context) error {
 	log.Println("Starting Vestro data import job...")
 
-	// 1. Buscar usuários a processar
+	// 1. Buscar produtores a processar da API Agriwin
 	log.Println("Fetching users to integrate from Agriwin...")
 	users, err := s.userProvider.GetUsersToIntegrate(ctx)
 	if err != nil {
@@ -48,66 +47,76 @@ func (s *ImporterService) RunImport(ctx context.Context) error {
 	}
 	log.Printf("Found %d users to process.", len(users))
 
-	// 2. Autenticar na API Vestro (uma vez)
-	log.Println("Authenticating with Vestro API...")
-	token, err := s.apiClient.Authenticate(ctx)
-	if err != nil {
-		return fmt.Errorf("vestro authentication failed: %w", err)
-	}
-	log.Println("Authentication successful.")
-
-	// Carrega dados que são comuns a todos (produtos, tipos de combustível, etc)
-	commonPayload, err := s.fetchCommonData(ctx, token)
-	if err != nil {
-		log.Printf("Warning: failed to fetch some common data: %v", err)
-	}
-
-	// 3. Loop para processar cada usuário
+	// 2. Loop para processar cada produtor individualmente
 	for _, user := range users {
-		log.Printf("Processing user: %s (Vestro ID: %s)", user.UserUUID, user.VestroIdentifier)
+		log.Printf("------------------ Processing Producer ID: %d ------------------", user.ProdutorID)
 
-		lastSync := user.LastIntegration
-		// Se a data for muito antiga, usa o padrão do job para não buscar dados demais
+		// 2.1. Autenticar na API Vestro com as credenciais do produtor atual
+		log.Printf("Authenticating user '%s' with Vestro API...", user.Login)
+		token, err := s.apiClient.Authenticate(ctx, user.Login, user.Senha)
+		if err != nil {
+			log.Printf("ERROR: Vestro authentication failed for user '%s': %v. Skipping.", user.Login, err)
+			continue // Pula para o próximo produtor
+		}
+		log.Println("Authentication successful for this user.")
+
+		// 2.2. Buscar todos os dados para este produtor
+		lastSync := user.Data
+		// Garante que não buscamos um histórico muito longo na primeira vez
 		if time.Since(lastSync) > s.fetchSince {
 			lastSync = time.Now().Add(-s.fetchSince)
 		}
 
-		userPayload, err := s.fetchDataForUser(ctx, token, user, lastSync)
+		log.Printf("Fetching data since %v", lastSync)
+		userPayload, err := s.fetchAllDataForUser(ctx, token, user, lastSync)
 		if err != nil {
-			log.Printf("ERROR: Failed to fetch data for user %s: %v. Skipping.", user.UserUUID, err)
-			continue // Pula para o próximo usuário
+			log.Printf("ERROR: Failed to fetch data for producer %d: %v. Skipping.", user.ProdutorID, err)
+			continue
 		}
 
-		// Combina os dados comuns com os dados do usuário
-		userPayload.Products = commonPayload.Products
-		userPayload.FuelTypes = commonPayload.FuelTypes
-		userPayload.Vehicles = commonPayload.Vehicles
-		userPayload.Drivers = commonPayload.Drivers
-		userPayload.Employees = commonPayload.Employees
-
+		// 2.3. Enviar dados se houver algo novo
 		if userPayload.IsEmpty() {
-			log.Printf("No new data found for user %s.", user.UserUUID)
+			log.Printf("No new transactional data found for producer %d.", user.ProdutorID)
 			continue
 		}
 
-		log.Printf("Sending payload for user %s to Agriwin...", user.UserUUID)
+		log.Printf("Sending payload for producer %d to Agriwin...", user.ProdutorID)
 		if err := s.notifier.Send(ctx, *userPayload); err != nil {
-			log.Printf("ERROR: Failed to send data for user %s: %v. Skipping.", user.UserUUID, err)
+			log.Printf("ERROR: Failed to send data for producer %d: %v. Skipping.", user.ProdutorID, err)
 			continue
 		}
-		log.Printf("Successfully processed user %s.", user.UserUUID)
+		log.Printf("Successfully processed producer %d.", user.ProdutorID)
 	}
 
-	log.Println("Job finished successfully.")
+	log.Println("------------------ Job finished successfully ------------------")
 	return nil
 }
 
-// fetchCommonData busca dados que não são específicos do usuário.
-func (s *ImporterService) fetchCommonData(ctx context.Context, token string) (*dto.IntegrationPayload, error) {
+// fetchAllDataForUser busca todos os dados (mestres e transacionais) para um usuário.
+func (s *ImporterService) fetchAllDataForUser(ctx context.Context, token string, user dto.UserToIntegrate, since time.Time) (*dto.IntegrationPayload, error) {
 	var wg sync.WaitGroup
-	errChan := make(chan error, 5)
-	payload := &dto.IntegrationPayload{}
+	errChan := make(chan error, 7) // 2 transacionais + 5 de cadastro
 
+	payload := &dto.IntegrationPayload{
+		ProdutorID: user.ProdutorID,
+		FetchedAt:  time.Now(),
+	}
+
+	// O identificador na Vestro para filtrar os dados transacionais será o login.
+	// A propriedade de filtro será "driver", que é um palpite comum.
+	// Se o login for de um frentista, a propriedade pode ser "employee".
+	vestroIdentifier := user.Login
+
+	// --- Buscas Transacionais (com filtro de data e usuário) ---
+	wg.Add(2)
+	go s.fetchData(ctx, &wg, errChan, "supplies", func() (interface{}, error) {
+		return s.apiClient.GetSupplies(ctx, token, since, vestroIdentifier)
+	}, &payload.Supplies)
+	go s.fetchData(ctx, &wg, errChan, "productSales", func() (interface{}, error) {
+		return s.apiClient.GetProductSales(ctx, token, since, vestroIdentifier)
+	}, &payload.ProductSales)
+
+	// --- Buscas de Dados Mestres (sem filtro de data ou usuário específico, mas sob o token do usuário) ---
 	wg.Add(5)
 	go s.fetchData(ctx, &wg, errChan, "products", func() (interface{}, error) { return s.apiClient.GetProducts(ctx, token) }, &payload.Products)
 	go s.fetchData(ctx, &wg, errChan, "fuelTypes", func() (interface{}, error) { return s.apiClient.GetFuelTypes(ctx, token) }, &payload.FuelTypes)
@@ -123,40 +132,6 @@ func (s *ImporterService) fetchCommonData(ctx context.Context, token string) (*d
 			return nil, fetchErr
 		}
 	}
-
-	return payload, nil
-}
-
-// fetchDataForUser busca dados que SÃO específicos do usuário.
-func (s *ImporterService) fetchDataForUser(ctx context.Context, token string, user dto.UserToIntegrate, since time.Time) (*dto.IntegrationPayload, error) {
-	var wg sync.WaitGroup
-	errChan := make(chan error, 2)
-
-	payload := &dto.IntegrationPayload{
-		UserUUID:  user.UserUUID,
-		FetchedAt: time.Now(),
-	}
-
-	wg.Add(2)
-	go s.fetchData(ctx, &wg, errChan, "supplies", func() (interface{}, error) {
-		return s.apiClient.GetSupplies(ctx, token, since, user.VestroIdentifier)
-	}, &payload.Supplies)
-
-	go s.fetchData(ctx, &wg, errChan, "productSales", func() (interface{}, error) {
-		return s.apiClient.GetProductSales(ctx, token, since, user.VestroIdentifier)
-	}, &payload.ProductSales)
-
-	wg.Wait()
-	close(errChan)
-
-	// Verifica se houve erros durante a busca
-	for fetchErr := range errChan {
-		if fetchErr != nil {
-			// Para a busca de um usuário, qualquer erro é fatal para aquele usuário.
-			return nil, fetchErr
-		}
-	}
-
 	return payload, nil
 }
 

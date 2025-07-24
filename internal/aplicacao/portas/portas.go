@@ -1,4 +1,4 @@
-package ports
+package portas
 
 import (
 	"context"
@@ -11,9 +11,9 @@ type UserProvider interface {
 	GetUsersToIntegrate(ctx context.Context) ([]dto.UserToIntegrate, error)
 }
 
-// VestroAPIClient define o contrato para o cliente da API Vestro.
+// VestroAPIClient foi atualizada para receber as credenciais na autenticação.
 type VestroAPIClient interface {
-	Authenticate(ctx context.Context) (string, error)
+	Authenticate(ctx context.Context, login, password string) (string, error)
 	GetSupplies(ctx context.Context, token string, since time.Time, userIdentifier string) ([]dto.Supply, error)
 	GetProductSales(ctx context.Context, token string, since time.Time, userIdentifier string) ([]dto.ProductSale, error)
 	GetProducts(ctx context.Context, token string) ([]dto.Product, error)
@@ -23,7 +23,7 @@ type VestroAPIClient interface {
 	GetEmployees(ctx context.Context, token string) ([]dto.Employee, error)
 }
 
-// Notifier define o contrato para o serviço que notifica a aplicação final.
+// Notifier continua o mesmo.
 type Notifier interface {
 	Send(ctx context.Context, payload dto.IntegrationPayload) error
 }

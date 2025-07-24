@@ -12,29 +12,23 @@ import (
 // Config armazena todas as configurações da aplicação.
 type Config struct {
 	VestroBaseURL   string
-	VestroLogin     string
-	VestroPassword  string
 	GrailsAppURL    string
-	FetchDataSince  time.Duration
 	AgriwinUsersURL string
+	FetchDataSince  time.Duration
 }
 
 // Load carrega as configurações das variáveis de ambiente.
-// O arquivo .env é usado apenas para desenvolvimento local.
 func Load() (*Config, error) {
-	// Ignora erro se o arquivo .env não for encontrado (comum em produção)
 	_ = godotenv.Load()
 
-	fetchHours, err := strconv.Atoi(getEnv("FETCH_DATA_SINCE_HOURS", "1"))
+	fetchHours, err := strconv.Atoi(getEnv("FETCH_DATA_SINCE_HOURS", "24")) // Aumentado para 24h como padrão
 	if err != nil {
-		log.Printf("Invalid FETCH_DATA_SINCE_HOURS, using default 1h. Error: %v", err)
-		fetchHours = 1
+		log.Printf("Invalid FETCH_DATA_SINCE_HOURS, using default 24h. Error: %v", err)
+		fetchHours = 24
 	}
 
 	return &Config{
-		VestroBaseURL:   getEnv("VESTRO_API_URL", "http://dev.api.vestroeletronicos.com.br:3001"),
-		VestroLogin:     getEnv("VESTRO_LOGIN", ""),
-		VestroPassword:  getEnv("VESTRO_PASSWORD", ""),
+		VestroBaseURL:   getEnv("VESTRO_API_URL", ""),
 		GrailsAppURL:    getEnv("GRAILS_APP_URL", ""),
 		AgriwinUsersURL: getEnv("AGRIWIN_USERS_URL", ""),
 		FetchDataSince:  time.Duration(fetchHours) * time.Hour,
