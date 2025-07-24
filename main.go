@@ -4,9 +4,9 @@ import (
 	"context"
 	"log"
 	"os"
-	"vestro/internal/adaptadores/agriwin_api/notificar"
-	"vestro/internal/adaptadores/vestro_api"
-	"vestro/internal/aplicacao/services"
+	agriwin_api "vestro/internal/adaptadores/agriwin_api"
+	vestro_api "vestro/internal/adaptadores/vestro_api"
+	servicos "vestro/internal/aplicacao/servicos"
 	"vestro/internal/config"
 )
 
@@ -27,10 +27,10 @@ func main() {
 
 	// 1. Cria os adaptadores (implementações concretas das portas)
 	vestroClient := vestro_api.New(cfg.VestroBaseURL, cfg.VestroLogin, cfg.VestroPassword)
-	grailsNotifier := notificar.New(cfg.GrailsAppURL)
+	grailsNotifier := agriwin_api.New(cfg.GrailsAppURL)
 
 	// 2. Cria o serviço do core, injetando os adaptadores como interfaces
-	importerService := services.New(vestroClient, grailsNotifier, cfg.FetchDataSince)
+	importerService := servicos.New(vestroClient, grailsNotifier, cfg.FetchDataSince)
 
 	// 3. Executa o serviço
 	if err := importerService.RunImport(context.Background()); err != nil {
