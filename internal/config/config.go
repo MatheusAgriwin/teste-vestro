@@ -11,11 +11,12 @@ import (
 
 // Config armazena todas as configurações da aplicação.
 type Config struct {
-	VestroBaseURL  string
-	VestroLogin    string
-	VestroPassword string
-	GrailsAppURL   string
-	FetchDataSince time.Duration
+	VestroBaseURL   string
+	VestroLogin     string
+	VestroPassword  string
+	GrailsAppURL    string
+	FetchDataSince  time.Duration
+	AgriwinUsersURL string
 }
 
 // Load carrega as configurações das variáveis de ambiente.
@@ -31,11 +32,12 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		VestroBaseURL:  getEnv("VESTRO_API_URL", "http://dev.api.vestroeletronicos.com.br:3001"),
-		VestroLogin:    getEnv("VESTRO_LOGIN", ""),
-		VestroPassword: getEnv("VESTRO_PASSWORD", ""),
-		GrailsAppURL:   getEnv("GRAILS_APP_URL", ""),
-		FetchDataSince: time.Duration(fetchHours) * time.Hour,
+		VestroBaseURL:   getEnv("VESTRO_API_URL", "http://dev.api.vestroeletronicos.com.br:3001"),
+		VestroLogin:     getEnv("VESTRO_LOGIN", ""),
+		VestroPassword:  getEnv("VESTRO_PASSWORD", ""),
+		GrailsAppURL:    getEnv("GRAILS_APP_URL", ""),
+		AgriwinUsersURL: getEnv("AGRIWIN_USERS_URL", ""),
+		FetchDataSince:  time.Duration(fetchHours) * time.Hour,
 	}, nil
 }
 

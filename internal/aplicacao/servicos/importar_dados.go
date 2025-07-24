@@ -11,52 +11,103 @@ import (
 )
 
 type ImporterService struct {
-	apiClient  portas.VestroAPIClient
-	notifier   portas.Notifier
-	fetchSince time.Duration
+	apiClient    portas.VestroAPIClient
+	notifier     portas.Notifier
+	userProvider portas.UserProvider
+	fetchSince   time.Duration
 }
 
 func New(
 	apiClient portas.VestroAPIClient,
 	notifier portas.Notifier,
+	userProvider portas.UserProvider,
 	fetchSince time.Duration,
 ) *ImporterService {
 	return &ImporterService{
-		apiClient:  apiClient,
-		notifier:   notifier,
-		fetchSince: fetchSince,
+		apiClient:    apiClient,
+		notifier:     notifier,
+		userProvider: userProvider,
+		fetchSince:   fetchSince,
 	}
 }
 
-// RunImport executa o processo completo de importação e notificação.
+// RunImport executa o novo processo iterativo.
 func (s *ImporterService) RunImport(ctx context.Context) error {
 	log.Println("Starting Vestro data import job...")
 
-	// 1. Autenticar na API Vestro
+	// 1. Buscar usuários a processar
+	log.Println("Fetching users to integrate from Agriwin...")
+	users, err := s.userProvider.GetUsersToIntegrate(ctx)
+	if err != nil {
+		return fmt.Errorf("could not get users to integrate: %w", err)
+	}
+
+	if len(users) == 0 {
+		log.Println("No users to integrate. Job finished.")
+		return nil
+	}
+	log.Printf("Found %d users to process.", len(users))
+
+	// 2. Autenticar na API Vestro (uma vez)
 	log.Println("Authenticating with Vestro API...")
 	token, err := s.apiClient.Authenticate(ctx)
 	if err != nil {
-		return fmt.Errorf("authentication failed: %w", err)
+		return fmt.Errorf("vestro authentication failed: %w", err)
 	}
 	log.Println("Authentication successful.")
 
-	// 2. Buscar todos os dados em paralelo
-	var wg sync.WaitGroup
-	errChan := make(chan error, 7) // Um buffer para cada goroutine
-
-	payload := dto.IntegrationPayload{
-		FetchedAt: time.Now(),
+	// Carrega dados que são comuns a todos (produtos, tipos de combustível, etc)
+	commonPayload, err := s.fetchCommonData(ctx, token)
+	if err != nil {
+		log.Printf("Warning: failed to fetch some common data: %v", err)
 	}
 
-	since := time.Now().Add(-s.fetchSince)
-	log.Printf("Fetching data since %v", since)
+	// 3. Loop para processar cada usuário
+	for _, user := range users {
+		log.Printf("Processing user: %s (Vestro ID: %s)", user.UserUUID, user.VestroIdentifier)
 
-	// Funções que dependem de data
-	wg.Add(2)
-	go s.fetchData(ctx, &wg, errChan, "supplies", func() (interface{}, error) { return s.apiClient.GetSupplies(ctx, token, since) }, &payload.Supplies)
-	go s.fetchData(ctx, &wg, errChan, "productSales", func() (interface{}, error) { return s.apiClient.GetProductSales(ctx, token, since) }, &payload.ProductSales)
+		lastSync := user.LastIntegration
+		// Se a data for muito antiga, usa o padrão do job para não buscar dados demais
+		if time.Since(lastSync) > s.fetchSince {
+			lastSync = time.Now().Add(-s.fetchSince)
+		}
 
-	// Funções de cadastro (não dependem de data)
+		userPayload, err := s.fetchDataForUser(ctx, token, user, lastSync)
+		if err != nil {
+			log.Printf("ERROR: Failed to fetch data for user %s: %v. Skipping.", user.UserUUID, err)
+			continue // Pula para o próximo usuário
+		}
+
+		// Combina os dados comuns com os dados do usuário
+		userPayload.Products = commonPayload.Products
+		userPayload.FuelTypes = commonPayload.FuelTypes
+		userPayload.Vehicles = commonPayload.Vehicles
+		userPayload.Drivers = commonPayload.Drivers
+		userPayload.Employees = commonPayload.Employees
+
+		if userPayload.IsEmpty() {
+			log.Printf("No new data found for user %s.", user.UserUUID)
+			continue
+		}
+
+		log.Printf("Sending payload for user %s to Agriwin...", user.UserUUID)
+		if err := s.notifier.Send(ctx, *userPayload); err != nil {
+			log.Printf("ERROR: Failed to send data for user %s: %v. Skipping.", user.UserUUID, err)
+			continue
+		}
+		log.Printf("Successfully processed user %s.", user.UserUUID)
+	}
+
+	log.Println("Job finished successfully.")
+	return nil
+}
+
+// fetchCommonData busca dados que não são específicos do usuário.
+func (s *ImporterService) fetchCommonData(ctx context.Context, token string) (*dto.IntegrationPayload, error) {
+	var wg sync.WaitGroup
+	errChan := make(chan error, 5)
+	payload := &dto.IntegrationPayload{}
+
 	wg.Add(5)
 	go s.fetchData(ctx, &wg, errChan, "products", func() (interface{}, error) { return s.apiClient.GetProducts(ctx, token) }, &payload.Products)
 	go s.fetchData(ctx, &wg, errChan, "fuelTypes", func() (interface{}, error) { return s.apiClient.GetFuelTypes(ctx, token) }, &payload.FuelTypes)
@@ -67,33 +118,49 @@ func (s *ImporterService) RunImport(ctx context.Context) error {
 	wg.Wait()
 	close(errChan)
 
-	// Verificar se houve erros durante a busca
 	for fetchErr := range errChan {
 		if fetchErr != nil {
-			// Pode-se decidir continuar mesmo com erro em um endpoint, ou parar tudo.
-			// Aqui, vamos apenas logar o erro e continuar.
-			log.Printf("Error during data fetching: %v", fetchErr)
+			return nil, fetchErr
 		}
 	}
 
-	// 3. Enviar os dados para a aplicação Grails se houver algo novo
-	if payload.IsEmpty() {
-		log.Println("No new data to send. Job finished.")
-		return nil
-	}
-
-	log.Printf("Sending %d supplies, %d product sales, %d products, etc. to Grails application...",
-		len(payload.Supplies), len(payload.ProductSales), len(payload.Products))
-
-	if err := s.notifier.Send(ctx, payload); err != nil {
-		return fmt.Errorf("failed to send data to notifier: %w", err)
-	}
-
-	log.Println("Data sent successfully to Grails application. Job finished.")
-	return nil
+	return payload, nil
 }
 
-// fetchData é um helper para executar as chamadas em paralelo.
+// fetchDataForUser busca dados que SÃO específicos do usuário.
+func (s *ImporterService) fetchDataForUser(ctx context.Context, token string, user dto.UserToIntegrate, since time.Time) (*dto.IntegrationPayload, error) {
+	var wg sync.WaitGroup
+	errChan := make(chan error, 2)
+
+	payload := &dto.IntegrationPayload{
+		UserUUID:  user.UserUUID,
+		FetchedAt: time.Now(),
+	}
+
+	wg.Add(2)
+	go s.fetchData(ctx, &wg, errChan, "supplies", func() (interface{}, error) {
+		return s.apiClient.GetSupplies(ctx, token, since, user.VestroIdentifier)
+	}, &payload.Supplies)
+
+	go s.fetchData(ctx, &wg, errChan, "productSales", func() (interface{}, error) {
+		return s.apiClient.GetProductSales(ctx, token, since, user.VestroIdentifier)
+	}, &payload.ProductSales)
+
+	wg.Wait()
+	close(errChan)
+
+	// Verifica se houve erros durante a busca
+	for fetchErr := range errChan {
+		if fetchErr != nil {
+			// Para a busca de um usuário, qualquer erro é fatal para aquele usuário.
+			return nil, fetchErr
+		}
+	}
+
+	return payload, nil
+}
+
+// (A função helper 'fetchData' continua a mesma)
 func (s *ImporterService) fetchData(ctx context.Context, wg *sync.WaitGroup, errChan chan<- error, name string, fetchFunc func() (interface{}, error), result interface{}) {
 	defer wg.Done()
 	log.Printf("Fetching %s...", name)
@@ -102,11 +169,6 @@ func (s *ImporterService) fetchData(ctx context.Context, wg *sync.WaitGroup, err
 		errChan <- fmt.Errorf("failed to fetch %s: %w", name, err)
 		return
 	}
-
-	// Usando reflection para atribuir o resultado ao campo correto do payload
-	// Isso é complexo, então para simplificar vamos fazer a atribuição direta após a chamada
-	// A estrutura aqui é um exemplo de como seria. O código atualizado está no RunImport.
-	// Por simplicidade, faremos a atribuição nos callers.
 
 	switch r := result.(type) {
 	case *[]dto.Supply:

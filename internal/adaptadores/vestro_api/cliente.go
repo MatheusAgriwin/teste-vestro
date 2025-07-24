@@ -71,37 +71,38 @@ func (c *apiClient) Authenticate(ctx context.Context) (string, error) {
 
 // As funções abaixo agora chamam a *função* genérica fetchAndAggregate,
 // passando as dependências do apiClient.
-func (c *apiClient) GetSupplies(ctx context.Context, token string, since time.Time) ([]dto.Supply, error) {
-	return fetchAndAggregate[dto.Supply](ctx, c.httpClient, c.baseURL, token, "/supplies", since)
+func (c *apiClient) GetSupplies(ctx context.Context, token string, since time.Time, userIdentifier string) ([]dto.Supply, error) {
+	// A propriedade de filtro 'driver' é um palpite. Pode ser 'employee' ou outra.
+	return fetchAndAggregate[dto.Supply](ctx, c.httpClient, c.baseURL, token, "/supplies", since, "driver", userIdentifier)
 }
 
-func (c *apiClient) GetProductSales(ctx context.Context, token string, since time.Time) ([]dto.ProductSale, error) {
-	return fetchAndAggregate[dto.ProductSale](ctx, c.httpClient, c.baseURL, token, "/product/sales", since)
+func (c *apiClient) GetProductSales(ctx context.Context, token string, since time.Time, userIdentifier string) ([]dto.ProductSale, error) {
+	return fetchAndAggregate[dto.ProductSale](ctx, c.httpClient, c.baseURL, token, "/product/sales", since, "driver", userIdentifier)
 }
 
 func (c *apiClient) GetProducts(ctx context.Context, token string) ([]dto.Product, error) {
-	return fetchAndAggregate[dto.Product](ctx, c.httpClient, c.baseURL, token, "/products", time.Time{})
+	return fetchAndAggregate[dto.Product](ctx, c.httpClient, c.baseURL, token, "/products", time.Time{}, "", "")
 }
 
 func (c *apiClient) GetFuelTypes(ctx context.Context, token string) ([]dto.FuelType, error) {
-	return fetchAndAggregate[dto.FuelType](ctx, c.httpClient, c.baseURL, token, "/fuel/types", time.Time{})
+	return fetchAndAggregate[dto.FuelType](ctx, c.httpClient, c.baseURL, token, "/fuel/types", time.Time{}, "", "")
 }
 
 func (c *apiClient) GetVehicles(ctx context.Context, token string) ([]dto.Vehicle, error) {
-	return fetchAndAggregate[dto.Vehicle](ctx, c.httpClient, c.baseURL, token, "/vehicles", time.Time{})
+	return fetchAndAggregate[dto.Vehicle](ctx, c.httpClient, c.baseURL, token, "/vehicles", time.Time{}, "", "")
 }
 
 func (c *apiClient) GetDrivers(ctx context.Context, token string) ([]dto.Driver, error) {
-	return fetchAndAggregate[dto.Driver](ctx, c.httpClient, c.baseURL, token, "/drivers", time.Time{})
+	return fetchAndAggregate[dto.Driver](ctx, c.httpClient, c.baseURL, token, "/drivers", time.Time{}, "", "")
 }
 
 func (c *apiClient) GetEmployees(ctx context.Context, token string) ([]dto.Employee, error) {
-	return fetchAndAggregate[dto.Employee](ctx, c.httpClient, c.baseURL, token, "/employees", time.Time{})
+	return fetchAndAggregate[dto.Employee](ctx, c.httpClient, c.baseURL, token, "/employees", time.Time{}, "", "")
 }
 
 // fetchAndAggregate é agora uma FUNÇÃO genérica, não um método.
 // Ela recebe httpClient e baseURL como parâmetros.
-func fetchAndAggregate[T any](ctx context.Context, httpClient *http.Client, baseURL, token, path string, since time.Time) ([]T, error) {
+func fetchAndAggregate[T any](ctx context.Context, httpClient *http.Client, baseURL, token, path string, since time.Time, filterProperty, filterValue string) ([]T, error) {
 	var allResults []T
 	const limit = 100
 	start := 0
@@ -116,6 +117,10 @@ func fetchAndAggregate[T any](ctx context.Context, httpClient *http.Client, base
 			q.Set("startDate", since.UTC().Format("2006-01-02T15-04-05Z"))
 		}
 
+		if filterProperty != "" && filterValue != "" {
+			q.Set("property", filterProperty)
+			q.Set("search", filterValue)
+		}
 		fullURL := fmt.Sprintf("%s%s?%s", baseURL, path, q.Encode())
 		req, err := http.NewRequestWithContext(ctx, "GET", fullURL, nil)
 		if err != nil {
